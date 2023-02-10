@@ -1,0 +1,436 @@
+
+function Get-IMDBMatch
+{
+    <#
+    .Synopsis
+       Retrieves search results from IMDB
+    .DESCRIPTION
+       This cmdlet posts a search to IMDB and returns the results.
+    .EXAMPLE
+       Get-IMDBMatch -Title 'American Dad!'
+    .EXAMPLE
+       Get-IMDBMatch -Title 'American Dad!' | Where-Object { $_.Type -eq 'TV Series' }
+    .PARAMETER Title
+       Specify the name of the tv show/movie you want to search for.
+ 
+    #>
+ 
+    [cmdletbinding()]
+    param
+    (
+        [Parameter(
+            Mandatory=$True, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+            [Alias('Name')]
+            [string[]] $Title)
+ 
+    BEGIN { }
+ 
+    PROCESS {
+        foreach ($MediaTitle in $Title) {
+            try {
+            
+                $IMDBSearch = Invoke-WebRequest -Uri "https://www.imdb.com/find?q=$($MediaTitle -replace " ","+")&s=all" -UseBasicParsing
+
+                #write-host "https://www.imdb.com/find?q=$($MediaTitle -replace " ","+")&s=all"
+
+                $FoundMatches = $IMDBSearch.Content -split "<tr class=`"findresult " | select -Skip 1 | % { (($_ -split "<TD class=`"result_text`">")[1] -split "</TD>")[0] } | Select-String -Pattern "fn_al_tt_"
+
+                #write-host "$FoundMatches.count matches"
+ 
+                foreach ($Match in $FoundMatches) {
+ 
+                    $ID = (($Match -split "/title/")[1] -split "/")[0]
+                    $MatchTitle = (($Match -split ">")[1] -split "</a")[0]
+                    $Released = (($Match -split "</a> \(")[1] -split "\)")[0]
+                    $Type = (($Match -split "\) \(")[1] -split "\) ")[0]
+ 
+                    if ($Type -eq "") {
+                        $Type = "Movie"
+                    }
+ 
+                    if ($ID -eq "") {
+                        Continue
+                    }
+ 
+                    $returnObject = New-Object System.Object
+                    $returnObject | Add-Member -Type NoteProperty -Name ID -Value $ID
+                    $returnObject | Add-Member -Type NoteProperty -Name Title -Value $MatchTitle
+                    $returnObject | Add-Member -Type NoteProperty -Name Released -Value $Released
+                    $returnObject | Add-Member -Type NoteProperty -Name Type -Value $Type
+ 
+                    Write-Output $returnObject
+ 
+                    Remove-Variable ID, MatchTitle, Released, Type
+   
+                }
+            } catch {}
+<#
+            #Remove-Variable FoundMatches
+            #Remove-Variable IMDBSearch
+#>
+        }
+    }
+ 
+    END { }
+}
+ 
+function Get-IMDBItemHTML
+{
+    <#
+    .Synopsis
+       Retrieves information about a movie/tv show etc. from IMDB.
+    .DESCRIPTION
+       This cmdlet fetches information about the movie/tv show matching the specified ID from IMDB.
+       The ID is often seen at the end of the URL at IMDB.
+    .EXAMPLE
+        Get-IMDBItem -ID tt0848228
+    .EXAMPLE
+       Get-IMDBMatch -Title 'American Dad!' | Get-IMDBItem
+ 
+       This will fetch information about the item(s) piped from the Get-IMDBMatch cmdlet.
+    .PARAMETER ID
+       Specify the ID of the tv show/movie you want get. The ID has the format of tt0123456
+    #>
+ 
+    [cmdletbinding()]
+    param([Parameter(Mandatory=$True, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+          [string[]] $ID)
+ 
+    BEGIN { }
+ 
+    PROCESS {
+        foreach ($ImdbID in $ID) {
+            try {
+                $IMDBItem = Invoke-WebRequest -Uri "https://www.imdb.com/title/$ImdbID/" -UseBasicParsing
+ 
+                $ItemInfo = (($IMDBItem.Content -split "<div id=`"title-overview-widget`" class=`"heroic-overview`">")[1] -split "<div id=`"sidebar`">")[0]
+ 
+                $ItemTitle = (($ItemInfo -split "<h1 itemprop=`"name`" class=`"`">")[1] -split "&nbsp;")[0]
+           
+                If (($ItemInfo -split "itemprop=`"datePublished`" content=`"").Length -gt 1) {
+                    $Type = "Movie"
+                    [DateTime]$Released = (($ItemInfo -split "<meta itemprop=`"datePublished`" content=`"")[1] -split "`" />")[0]
+                } Else {
+                    $Type = "TV Series"
+                    $Released = $null
+                }
+ 
+                $Description = ((($ItemInfo -split "<div class=`"summary_text`" itemprop=`"description`">")[1] -split "</div>")[0]).Trim()
+           
+                $Rating = (($ItemInfo -split "<span itemprop=`"ratingValue`">")[1] -split "</span>")[0]
+           
+                $GenreSplit = $ItemInfo -split "itemprop=`"genre`">"
+                $NumGenres = ($GenreSplit.Length)-1
+                $Genres = foreach ($Genre in $GenreSplit[1..$NumGenres]) {
+                    ($Genre -split "</span>")[0]
+                }
+ 
+                $MPAARating = (($ItemInfo -split "<meta itemprop=`"contentRating`" content=`"")[1] -split "`">")[0]
+ 
+                try {
+                    $RuntimeMinutes = New-TimeSpan -Minutes (($ItemInfo -split "<time itemprop=`"duration`" datetime=`"PT")[1] -split "M`">")[0]
+                }
+                catch {
+                    $RuntimeMinutes = $null
+                }
+ 
+                if ($Description -like '*Add a plot*') {
+                    $Description = $null
+                }
+ 
+                $Properties = @{
+                    Type = "$Type"
+                    Title = "$ItemTitle"
+                    Genre = "$Genres"
+                    Description = "$Description"
+                    Released = "$Released"
+                    RuntimeMinutes = "$RuntimeMinutes"
+                    Rating = "$Rating"
+                    MPAARating = "$MPAARating"
+                }
+                $returnObject = New-Object -TypeName PSObject -Property $Properties
+           
+                Write-Output $returnObject
+ 
+                Remove-Variable IMDBItem, ItemInfo, ItemTitle, Genres, Description, Released, Type, Rating, RuntimeMinutes, MPAARating -ErrorAction SilentlyContinue
+            } catch {}
+        }
+    }
+ 
+    END { }
+}
+ 
+function Get-IMDBItemXML
+{
+    <#
+    .Synopsis
+       Retrieves information about a movie/tv show etc. from IMDB.
+    .DESCRIPTION
+       This cmdlet fetches information about the movie/tv show matching the specified ID from IMDB.
+       The ID is often seen at the end of the URL at IMDB.
+    .EXAMPLE
+        Get-IMDBItem -ID tt0848228
+    .EXAMPLE
+       Get-IMDBMatch -Title 'American Dad!' | Get-IMDBItem
+ 
+       This will fetch information about the item(s) piped from the Get-IMDBMatch cmdlet.
+    .PARAMETER ID
+       Specify the ID of the tv show/movie you want get. The ID has the format of tt0123456
+    #>
+ 
+    [cmdletbinding()]
+    param([Parameter(Mandatory=$True, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+          [string[]] $ID)
+ 
+    BEGIN { }
+ 
+    PROCESS {
+        foreach ($ImdbID in $ID) {
+            #Write-Host "Started in loop"
+            
+            $ImdbID = $ID
+
+            $URI = "https://www.imdb.com/title/$ImdbID/"
+            
+            #Test Episode vs. Movie
+            #$URI="https://www.imdb.com/title/tt12421610/" #Episide
+            #$URI = "https://www.imdb.com/title/tt14397338/" #Episode
+            #$URI="https://www.imdb.com/title/tt0088847/" #Movie
+            #$URI = "https://www.imdb.com/title/tt0112178/" #Voyager show page
+            #$URI = "https://www.imdb.com/title/tt0709004/" #Voyager episode
+            #$URI = "https://www.imdb.com/title/tt0810900/" #TV Movie - High School Musical 2
+
+
+            try {
+                $IMDBItem = Invoke-WebRequest -Uri "$URI"
+            
+                $ItemInfo = $IMDBItem.AllElements
+
+
+                $ItemTitle = ($ItemInfo | where class -match "TitleHeader").innerText
+            
+                $Genres = ($ItemInfo | where class -match "GenresAndPlot__GenreChip").innerText
+
+                $Description = ($ItemInfo | where class -match "GenresAndPlot__TextContainerBreakpoint").innerText.split("`n")[0]
+
+                $Stars = ($ItemInfo | where class -match "StyledComponents__ActorName").innerText.split("`n") #[0,1,2,3,4,5,6]
+
+                $TC = ($ItemInfo | where class -match "TitleBlockMetaData__MetaDataList").innertext.split("`n").count
+                $T0 = ($ItemInfo | where class -match "TitleBlockMetaData__MetaDataList").innertext.split("`n")[0].replace("`r","")
+                $T1 = ($ItemInfo | where class -match "TitleBlockMetaData__MetaDataList").innertext.split("`n")[1].replace("`r","")
+                $T2 = ($ItemInfo | where class -match "TitleBlockMetaData__MetaDataList").innertext.split("`n")[2].replace("`r","")
+
+                If ( $TC -eq 3 ) {
+                    $Type = "Movie"
+                    If ( $T0.Substring(0,7) -eq "Episode" ) {
+                        $Type = "TV Episode"
+                        $Released = $T0.Substring(14)
+                        $MPAARating = $T1
+                    } Else {
+                        $Released = $T0.Substring($T0.Length/2)
+                        $MPAARating = $T1.Substring($T1.Length/2)
+                    }
+                    $ShowLen = $T2
+                } else {
+                    $T3 = ($ItemInfo | where class -match "TitleBlockMetaData__MetaDataList").innertext.split("`n")[3].replace("`r","")
+                    $Type = $T0
+                    $Released = $T1.Substring($T1.Length/2)
+                    $MPAARating = $T2.Substring($T2.Length/2)
+                    $ShowLen = $T3
+                }
+
+                <#
+                $Show = ($ItemInfo | where class -match "TitleBlockMetaData__MetaDataList").innertext.split("`n")[0].replace("`r","")
+                $Episode = ($ItemInfo | where class -match "TitleBlock__SeriesParentLinkWrapper").innertext
+                $Movie = ($ItemInfo | where class -match "TitleBlockMetaData__MetaDataList").innertext
+                $ShowLen = $Show.Length
+
+                if ($Episode.Length -gt 0 ) { $Type = "TV Episode" }
+                elseif ($Show -eq "TV Series") { $Type="TV Series" }
+                elseif ($Movie.Length -gt 0 ) { $Type = "Movie" }
+                else { $Type = "Unknown" }
+                #>
+
+                $Rating = ($ItemInfo | where class -match "AggregateRatingButton__RatingScore").innerText.split("`n")[0]
+
+                #$MPAARating = ($ItemInfo | where class -match "TitleBlockMetaData__ListItemText").innerText.split("`n")[1]
+
+                if ( $Type -eq "Movie" ) {
+                #    $Released = ($ItemInfo | where class -match "TitleBlockMetaData__ListItemText").innerText.split("`n")[0]
+                #    $Released = ($ItemInfo | where class -match "TitleBlock__TitleMetaDataContainer").innerText.split("`n")[0]
+                    $Runtime = ($ItemInfo | where class -match "TitleBlock__TitleMetaDataContainer").innerText.split("`n")[2]
+                    $MPAARating = ($ItemInfo | where class -match "TitleBlockMetaData__ListItemText").innerText.split("`n")[1]
+                }
+
+                if ( $Type -eq "TV Episode" ) {
+                #    $Released = ($ItemInfo | where class -match "TitleBlock__TitleMetaDataContainer").innerText.split("`n")[0]
+                    $Runtime = ($ItemInfo | where class -match "TitleBlockMetaData__MetaDataList").innerText.split("`n")[2]
+                }
+                if ( $Type -eq "TV Series" ) {
+                #    $Released = ($ItemInfo | where class -match "TitleBlockMetaData__ListItemText").innerText.split("`n")[0]
+                    $Runtime = $Released
+                }
+
+                <#
+                Fields needed:
+                #>
+                $Properties = @{
+                    Type = "$Type"
+                    Title = "$ItemTitle"
+                    Description = "$Description"
+		            Stars = "$Stars"
+                    Genre = "$Genres"
+                    Released = "$Released"
+                    Runtime = "$Runtime"
+                    Rating = "$Rating"
+                    MPAARating = "$MPAARating"
+                }
+
+
+                <#
+                #Convert to HTML Pages
+                $EOL= "`r`n"
+                $Q = """"
+                $WebPage = "<HTML>$EOL"
+                $WebPage = "$WebPage<Title>$ItemTitle</Title>$EOL"
+                $WebPage = "$WebPage<Body>$EOL"
+                $WebPage = "$WebPage<H3><A href=$Q$URI$Q>$ItemTitle</A></H3>" + $EOL
+                $WebPage = "$WebPage<Table>$EOL"
+                $WebPage = "$WebPage<TR><TD>Description</TD><TD>$Description</TD></TR>$EOL"
+                $WebPage = "$WebPage<TR><TD>Type</TD><TD>$Type</TD></TR>$EOL"
+                $WebPage = "$WebPage<TR><TD>Stars</TD><TD>$Stars</TD></TR>$EOL"
+                $WebPage = "$WebPage<TR><TD>Genres</TD><TD>$Genres</TD></TR>$EOL"
+                $WebPage = "$WebPage<TR><TD>Released</TD><TD>$Released</TD></TR>$EOL"
+                $WebPage = "$WebPage<TR><TD>Runtime</TD><TD>$Runtime</TD></TR>$EOL"
+                $WebPage = "$WebPage<TR><TD>Viewer Ratings</TD><TD>$Rating</TD></TR>$EOL"
+                $WebPage = "$WebPage<TR><TD>MPAA Ratings</TD><TD>$MPAARating</TD></TR>$EOL"
+                $WebPage = "$WebPage</Table>$EOL"
+                $WebPage = "$WebPage</Body>$EOL"
+                $WebPage = "$WebPage</HTML>$EOL"
+                write-host  $WebPage
+                #>
+
+                <#
+		        write-host "Stars = #$Stars#"
+                write-host "Genre = #$Genres#"
+                write-host "Rel   = #$Released#"
+                write-host "Runtm = #$Runtime#"
+                write-host "Rtng  = #$Rating#"
+                write-host "MPAA  = #$MPAARating#"
+                #>
+                <#
+                write-host $WebPage
+                write-host "URI   = #$URI#"
+                write-host "Type  = #$Type#"
+                write-host "Title = #$ItemTitle#"
+                write-host "Descr = #$Description#"
+		        write-host "Stars = #$Stars#"
+                write-host "Genre = #$Genres#"
+                write-host "Rel   = #$Released#"
+                write-host "Runtm = #$Runtime#"
+                write-host "Rtng  = #$Rating#"
+                write-host "MPAA  = #$MPAARating#"
+                #>
+
+
+
+                $returnObject = New-Object -TypeName PSObject -Property $Properties
+
+                #write-host $returnObject
+
+                Write-Output $returnObject
+ 
+                Remove-Variable IMDBItem, ItemInfo, ItemTitle, Genres, Description, Released, Type, Rating, Runtime, MPAARating, Stars, S, SS -ErrorAction SilentlyContinue
+            } catch {}
+        }
+        #write-Host "Exiting loop"
+    }
+ 
+    END { }
+}
+
+
+
+<#
+param (
+	[Parameter(Mandatory=$true)][string]$title,
+	[Parameter(Mandatory=$true)][string]$year
+)
+#>
+
+
+#Determine folder to recurse
+$CodedP = $args[0]
+
+If($CodedP) {
+    #Not empty - no change
+
+} Else {
+    #Empty
+
+    # Disable next line to prevent input prompt and just use provided/current
+    #$CodedP = Read-Host -Prompt 'Input path'
+    If($CodedP) {
+        #Not empty
+        $CodedP = $CodedP
+    } Else {
+        #Empty
+        $CodedP = $Pwd
+    }
+}
+write-host '==== Recursing through: ' $CodedP
+
+ForEach ($FN in Get-ChildItem -Recurse -Path $CodedP) {
+    $F = $FN.Name
+    $X = ""
+    If ( $F.length -ge 5 ) { $X = $F.substring($F.length-4,4) }
+
+        If ( ($X -eq ".mp4") -or ($X -eq ".mkv") -or ($X -eq ".avi") -or ($X -eq ".mpg") -or ($X -eq ".m4v") ) {
+            # write-host -NoNewLine 45 $F
+            $P = $FN.directory
+
+            $F = $F.substring(0,$F.length-4) <# Remove extension #>
+            $Out = "$P\$F.txt"
+
+            # Checking whether file exists; if so, don't repeat the work
+            If ( -not (Test-Path $Out -PathType Leaf) ) {
+
+                write-output "=$F= to =$Out="
+
+                #Assume Year is last four digits and title is the rest, before file extension
+                $Year = $F.substring($F.length-4,4)
+                $Title = $F.substring(0,$F.length-5)
+
+                #write-host "Processing $Year $Title"
+                #write-host -NoNewline
+                (get-IMDBMatch -Title $Title | Where { $_.Released -eq $Year } | Where-Object { $_.Type -eq 'Movie'} | Get-IMDBItemXML ) > $Out
+                #write-host -NoNewline
+                #write-host "Processed $Year $Title"
+
+                # Changing "-eq 0" to "-lt 500" so under 500 is deleted
+                If ( ( (Get-Item $Out).length) -lt 500 ) {
+                    #write-host -NoNewLine "Deleting Too-small-file: $Out"
+                    Remove-Item $Out
+
+                }
+
+            }
+
+        }
+
+    }
+
+<#
+Derived from:
+https://www.reddit.com/r/PowerShell/comments/61kib6/query_imdb_for_movies_and_information/
+https://pastebin.com/5k3ad8TM
+
+Note:
+	Get-IMDBItemMatch is not altered (to the best of my knowledge) except try/catch
+	Get-IMDBItemHTML is not altered (to the best of my knowledge) except try/catch
+	Get-IMDBItemXML has been altered heavily
+    Main has been altered heavily
+
+Example: get-IMDBMatch -Title '$Title' | Where { $_.Released -eq '$Year' | Get-IMDBItemXML
+
+#>
